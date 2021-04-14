@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 #define EPSYLON '\0'
 
@@ -114,9 +115,148 @@ int match_automata(struct automata *a, char *entry) {
 	return traverse_state(a->initial, entry);
 }
 
-int main(int argc, char *argv[]) {
-	//char *regex = argv[0];
-	//char *entry = argv[1];
+enum stack_element_type {
+	AUTOMATA = 1,
+	OPERATOR = 2
+};
+
+struct regex_stack {
+	enum stack_element_type type;
+	union {
+		struct automata *automata;
+		char operator;
+	} element;
+	struct regex_stack *previous;
+};
+
+struct automata *build_automata(char *regex) {
+	int regex_length = strlen(regex);
+	if (regex_length == 0) {
+		return NULL;
+	}
+	int i;
+	struct regex_stack *stack = (struct regex_stack *) malloc(sizeof(struct regex_stack));
+	stack->type = OPERATOR;
+	stack->element.operator = '(';
+	stack->previous = NULL;
+	for (i = 0; i <= regex_length; i++) {
+		char c = regex[i];
+		switch (c) {
+			case '|': {
+				if (stack->type == OPERATOR && (stack->element.operator == '|' || stack->element.operator == '(')) {
+					printf("Found '|' after '|' or '(' in position %d.\n", i);
+					return NULL;//ERROR
+				}
+				struct regex_stack *new_element = (struct regex_stack *) malloc(sizeof(struct regex_stack));
+				new_element->type = OPERATOR;
+				new_element->element.operator = '|';
+				new_element->previous = stack;
+				stack = new_element;
+				printf("Added operator |\n");
+				break;
+			}
+			case '*': {
+				if (stack->type == OPERATOR && (stack->element.operator == '|' || stack->element.operator == '(')) {
+					printf("Found '*' after '|' or '(' in position %d.\n", i);
+					return NULL;//ERROR
+				}
+				stack->element.automata = new_kleene_automata(stack->element.automata);
+				printf("Replaced automata by automata with kleene operator\n");
+				break;
+			}
+			case '(': {
+				struct regex_stack *new_element = (struct regex_stack *) malloc(sizeof(struct regex_stack));
+				new_element->type = OPERATOR;
+				new_element->element.operator = '(';
+				new_element->previous = stack;
+				stack = new_element;
+				printf("Added operator (\n");
+				break;
+			}
+			case ')':
+			case '\0': {
+				if (stack->type == OPERATOR && stack->element.operator == '|' || stack->element.operator == '(') {
+					printf("Found ')' after '|' or '(' in position %d.\n", i);
+					return NULL;//ERROR
+				}
+				struct automata *automata1 = NULL, *automata2 = NULL;
+				char last_operator = '\0';
+				int found_closing_parenthesis = 0;
+				while (stack) {
+					if (stack->type == OPERATOR) {
+						if (stack->element.operator == '(') {
+							found_closing_parenthesis = 1;
+							printf("found_closing_parenthesis = 1\n");
+							if (last_operator == '|') {
+								automata2 = new_union_automata(automata1, automata2);
+								printf("automata2 = new_union_automata\n");
+							}
+							stack = stack->previous;//REMOVE '('
+							break;
+						} else if (stack->element.operator == '|') {
+							last_operator = '|';
+							printf("last_operator = '|'\n");
+							if (automata1) {
+								automata2 = new_union_automata(automata1, automata2);
+								printf("automata2 = new_union_automata\n");
+								automata1 = NULL;
+							}
+						}
+					} else if (stack->type == AUTOMATA) {
+						if (!automata2) {
+							automata2 = stack->element.automata;
+							printf("automata2 = stack->element.automata\n");
+						} else {
+							if (last_operator == '\0') {
+								automata2 = new_concatenate_automata(stack->element.automata, automata2);
+								printf("automata2 = new_concatenate_automata\n");
+							} else if (last_operator == '|') {
+								if (automata1) {
+									automata1 = new_concatenate_automata(stack->element.automata, automata1);
+									printf("automata1 = new_concatenate_automata\n");
+								} else {
+									automata1 = stack->element.automata;
+									printf("automata1 = stack->element.automata\n");
+								}
+							}
+						}
+					}
+					stack = stack->previous;
+				}
+				if (!found_closing_parenthesis) {
+					printf("Closing parenthesis not found in position %d.\n", i);
+					return NULL;
+				}
+				struct regex_stack *new_element = (struct regex_stack *) malloc(sizeof(struct regex_stack));
+				new_element->type = AUTOMATA;
+				new_element->element.automata = automata2;
+				new_element->previous = stack;
+				stack = new_element;
+				break;
+			}
+			default: {
+				struct regex_stack *new_element = (struct regex_stack *) malloc(sizeof(struct regex_stack));
+				new_element->type = AUTOMATA;
+				new_element->element.automata = new_single_symbol_automata(c);
+				new_element->previous = stack;
+				stack = new_element;
+				printf("Adding automata for character %c\n", c);
+				break;
+			}
+		}
+	}
+	if (stack->type != AUTOMATA) {
+		printf("Top of the stack should be an automata.\n");
+	}
+	if (stack->previous != NULL) {
+		printf("Top of the stack should have only one element.\n");
+	}
+	return stack->element.automata;
+}
+
+void tests() {
+	char *entry;
+	int match;
 	//BEGIN REGEX (a|b)*aab
 	struct automata *automata_a = new_single_symbol_automata('a');
 	struct automata *automata_b = new_single_symbol_automata('b');
@@ -129,15 +269,31 @@ int main(int argc, char *argv[]) {
 	struct automata *automata_b_2 = new_single_symbol_automata('b');
 	struct automata *automata_kleene_a_a_b = new_concatenate_automata(automata_kleene_a_a, automata_b_2);
 	//END REGEX (a|b)*aab in automata_kleene_a_a_b
-	char *entry = "abbbbabaab";
-	int match = match_automata(automata_kleene_a_a_b, entry);
+	entry = "abbbbabaab";
+	match = match_automata(automata_kleene_a_a_b, entry);
+	printf("Did match for entry '%s'? %s\n", entry, match ? "Yes" : "No");//Yes because ends in aab
+	entry = "aaba";
+	match = match_automata(automata_kleene_a_a_b, entry);
+	printf("Did match for entry '%s'? %s\n", entry, match ? "Yes" : "No");//Yes because the automata reach the final state
+	entry = "aaaab";
+	match = match_automata(automata_kleene_a_a_b, entry);
 	printf("Did match for entry '%s'? %s\n", entry, match ? "Yes" : "No");//Yes because ends in aab
 	entry = "abbbbabab";
 	match = match_automata(automata_kleene_a_a_b, entry);
-	printf("Did match for entry '%s'? %s\n", entry, match ? "Yes" : "No");//No because ends in aaa and the automata does not reach the final state
+	printf("Did match for entry '%s'? %s\n", entry, match ? "Yes" : "No");//No because ends in bab and the automata does not reach the final state
 	entry = "abbbbabaabaaa";
 	match = match_automata(automata_kleene_a_a_b, entry);
 	printf("Did match for entry '%s'? %s\n", entry, match ? "Yes" : "No");//Yes because the automata reach the final state
+}
+
+int main(int argc, char *argv[]) {
+	char *regex = argv[1];
+	char *entry = argv[2];
+	printf("%s, %s\n", regex, entry);
+	struct automata *test_automata = build_automata(regex);
+	int match = match_automata(test_automata, entry);
+	printf("Did match for entry '%s'? %s\n", entry, match ? "Yes" : "No");//Yes because ends in aab
+	tests();
 	
 	return EXIT_SUCCESS;
 }
