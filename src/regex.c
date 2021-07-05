@@ -1,7 +1,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include "automata.h"
+#include "regex.h"
 #include "log.h"
+
+enum stack_element_type {
+	AUTOMATA = 1,
+	OPERATOR = 2
+};
+
+struct regex_stack {
+	enum stack_element_type type;
+	union {
+		struct automata *automata;
+		char operator;
+	} element;
+	struct regex_stack *previous;
+};
 
 int traverse_state(struct state *s, char *entry, int entry_index) {
 	if (s->final) {
@@ -23,46 +38,34 @@ int traverse_state(struct state *s, char *entry, int entry_index) {
 	return 0;
 }
 
-enum stack_element_type {
-	AUTOMATA = 1,
-	OPERATOR = 2
-};
-
-struct regex_stack {
-	enum stack_element_type type;
-	union {
-		struct automata *automata;
-		char operator;
-	} element;
-	struct regex_stack *previous;
-};
-
-int match(struct automata *a, char *entry) {
-	return traverse_state(a->initial, entry, 0);
+void free_regex_stack(struct regex_stack *stack) {
+	struct regex_stack *old_element;
+	while (stack) {
+		if (stack->type == AUTOMATA && stack->element.automata) {
+			free_automata(stack->element.automata);
+		}
+		old_element = stack;
+		stack = stack->previous;
+		free(old_element);
+	}
 }
 
-struct automata *build(char *regex) {
-	int regex_length = strlen(regex);
-	if (regex_length == 0) {
-		return NULL;
-	}
-	int i, minimum_reps = -1, maximum_reps = -1;
-	const int BUFFER_SIZE = 7;
-	char minimum_reps_buffer[BUFFER_SIZE];
-	minimum_reps_buffer[0] = '\0';
-	char maximum_reps_buffer[BUFFER_SIZE];
-	maximum_reps_buffer[0] = '\0';
+int match_regex(struct regex *regex, char *entry) {
+	return traverse_state(regex->automata->initial, entry, 0);
+}
+
+struct automata *build_automata(char *regex, int *pos) {
+	char c;
 	struct regex_stack *stack = NULL;
-	for (i = 0; i <= regex_length; i++) {
-		char c = regex[i];
+	for (c = regex[*pos]; ; c = regex[++*pos]) {
 		switch (c) {
 			case '|': {
 				if (!stack) {
-					4;
-					log("Left hand side operand expected for operator '|' in position %d", i);
+					log("Left hand side operand expected for operator '|' in position %d", *pos);
 					return NULL;
 				} else if (stack->type == OPERATOR) {
-					log("Found '|' after '%c' in position %d.\n", stack->element.operator, i);
+					log("Found '|' after '%c' in position %d.\n", stack->element.operator, *pos);
+					free_regex_stack(stack);
 					return NULL;
 				}
 				struct regex_stack *new_element = (struct regex_stack *) malloc(sizeof(struct regex_stack));
@@ -72,55 +75,71 @@ struct automata *build(char *regex) {
 				stack = new_element;
 				break;
 			}
-			case '*': {
+			case '?': {
 				if (!stack) {
-					log("Left hand side operand expected for operator '*' in position %d.\n", i);
+					log("Left hand side operand expected for operator '?' in position %d.\n", *pos);
 					return NULL;
 				} else if (stack->type == OPERATOR) {
-					log("Found '*' after '%c' in position %d.\n", stack->element.operator, i);
+					log("Found '?' after '%c' in position %d.\n", stack->element.operator, *pos);
+					free_regex_stack(stack);
+					return NULL;
+				}
+				stack->element.automata = new_optional_automata(stack->element.automata);
+				break;
+			}
+			case '+': {
+				if (!stack) {
+					log("Left hand side operand expected for operator '+' in position %d.\n", *pos);
+					return NULL;
+				} else if (stack->type == OPERATOR) {
+					log("Found '+' after '%c' in position %d.\n", stack->element.operator, *pos);
+					free_regex_stack(stack);
+					return NULL;
+				}
+				stack->element.automata = new_repetition_automata(stack->element.automata);
+				break;
+			}
+			case '*': {
+				if (!stack) {
+					log("Left hand side operand expected for operator '*' in position %d.\n", *pos);
+					return NULL;
+				} else if (stack->type == OPERATOR) {
+					log("Found '*' after '%c' in position %d.\n", stack->element.operator, *pos);
+					free_regex_stack(stack);
 					return NULL;
 				}
 				stack->element.automata = new_kleene_automata(stack->element.automata);
 				break;
 			}
 			case '(': {
-				if (!stack) {
-					stack = (struct regex_stack *) malloc(sizeof(struct regex_stack));
-					stack->type = OPERATOR;
-					stack->element.operator = '(';
-					stack->previous = NULL;
-				} else {
+				*pos = *pos + 1;
+				struct automata *automata = build_automata(regex, pos);
+				if (automata) {
 					struct regex_stack *new_element = (struct regex_stack *) malloc(sizeof(struct regex_stack));
-					new_element->type = OPERATOR;
-					new_element->element.operator = '(';
+					new_element->type = AUTOMATA;
+					new_element->element.automata = automata;
 					new_element->previous = stack;
 					stack = new_element;
 				}
 				break;
 			}
-			case ')':
+			case ')': {
+				if (!stack) {
+					return NULL;
+				}
 				if (stack->type == OPERATOR) {
-					log("Found ')' after '%c' in position %d.\n", stack->element.operator, i);
+					log("Found ')' after '%c' in position %d.\n", stack->element.operator, *pos);
+					free_regex_stack(stack);
 					return NULL;
 				}
 				struct automata *automata1 = NULL, *automata2 = NULL;
 				char last_operator = ')';
-				int found_open_parenthesis = 0;
 				while (stack) {
-					if (stack->type == OPERATOR) {
-						if (stack->element.operator == '(') {
-							found_open_parenthesis = 1;
-							if (last_operator == '|') {
-								automata2 = new_union_automata(automata1, automata2);
-							}
-							stack = stack->previous;//REMOVE '('
-							break;
-						} else if (stack->element.operator == '|') {
-							last_operator = '|';
-							if (automata1) {
-								automata2 = new_union_automata(automata1, automata2);
-								automata1 = NULL;
-							}
+					if (stack->type == OPERATOR && stack->element.operator == '|') {
+						last_operator = '|';
+						if (automata1) {
+							automata2 = new_union_automata(automata1, automata2);
+							automata1 = NULL;
 						}
 					} else if (stack->type == AUTOMATA) {
 						if (!automata2) {
@@ -137,77 +156,60 @@ struct automata *build(char *regex) {
 							}
 						}
 					}
-					stack = stack->previous;
+					struct regex_stack *previous_element = stack->previous;
+					free(stack);
+					stack = previous_element;
 				}
-				if (!found_open_parenthesis) {
-					log("There is no previous '(' to match symbol ')' in position %d.\n", i);
-					return NULL;
+				if (last_operator == '|') {
+					automata2 = new_union_automata(automata1, automata2);
+					automata1 = NULL;
 				}
-				struct regex_stack *new_element = (struct regex_stack *) malloc(sizeof(struct regex_stack));
-				new_element->type = AUTOMATA;
-				new_element->element.automata = automata2;
-				new_element->previous = stack;
-				stack = new_element;
-				break;
+				return automata2;
+			}
 			case '\0': {
-				if (stack->type == OPERATOR) {
-					log("Expression finished with wrong symbol %c.\n", stack->element.operator);
-					return NULL;
-				}
-				struct automata *automata1 = NULL, *automata2 = NULL;
-				char last_operator = '\0';
-				while (stack) {
-					if (stack->type == OPERATOR) {
-						if (stack->element.operator == '(') {
-							log("Missing closing group parenthesis ')' in position %d.\n", i);
-							return NULL;
-						} else if (stack->element.operator == '|') {
-							last_operator = '|';
-							if (automata1) {
-								automata2 = new_union_automata(automata1, automata2);
-								automata1 = NULL;
-							}
-						}
-					} else if (stack->type == AUTOMATA) {
-						if (!automata2) {
-							automata2 = stack->element.automata;
-						} else {
-							if (last_operator == '\0') {
-								automata2 = new_concatenate_automata(stack->element.automata, automata2);
-							} else if (last_operator == '|') {
-								if (automata1) {
-									automata1 = new_concatenate_automata(stack->element.automata, automata1);
-								} else {
-									automata1 = stack->element.automata;
-								}
-							}
-						}
-					}
-					if (!stack->previous) {
-						break;
-					}
-					stack = stack->previous;
-				}
-				stack->type = AUTOMATA;
-				stack->element.automata = automata2;
-				break;
+				log("Missing closing group parenthesis ')' in position %d.\n", *pos);
+				free_regex_stack(stack);
+				return NULL;
 			}
 			default: {
-				if (!stack) {
-					stack = (struct regex_stack *) malloc(sizeof(struct regex_stack));
-					stack->type = AUTOMATA;
-					stack->element.automata = new_single_symbol_automata(c);
-					stack->previous = NULL;
-				} else {
-					struct regex_stack *new_element = (struct regex_stack *) malloc(sizeof(struct regex_stack));
-					new_element->type = AUTOMATA;
-					new_element->element.automata = new_single_symbol_automata(c);
-					new_element->previous = stack;
-					stack = new_element;
-				}
+				struct regex_stack *new_element = (struct regex_stack *) malloc(sizeof(struct regex_stack));
+				new_element->type = AUTOMATA;
+				new_element->element.automata = new_single_symbol_automata(c);
+				new_element->previous = stack;
+				stack = new_element;
 				break;
 			}
 		}
 	}
-	return stack->element.automata;
+}
+
+struct regex *build_regex(char *regex) {
+	int regex_length;
+	if (regex == NULL || (regex_length = strlen(regex)) == 0) {
+		return NULL;
+	}
+	char *new_regex = (char *)malloc(regex_length + 3);
+	new_regex[0] = '(';
+	strncpy(new_regex + 1, regex, regex_length);
+	new_regex[regex_length + 1] = ')';
+	int pos = 1;
+	log("Compiling regex '%s'.", regex);
+	struct automata *automata = build_automata(new_regex, &pos);
+	if (automata) {
+		int new_regex_length = regex_length + 2;
+		if (pos + 1 < new_regex_length) {
+			log("Unmatched parenthesis in position %d.", pos);
+			free_automata(automata);
+			return NULL;
+		}
+		struct regex *p_regex = (struct regex *)malloc(sizeof(struct regex));
+		p_regex->automata = automata;
+		return p_regex;
+	}
+	return NULL;
+}
+
+void free_regex(struct regex *regex) {
+	free_automata(regex->automata);
+	free(regex);
 }
