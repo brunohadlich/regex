@@ -1,0 +1,11 @@
+obj/shared/*
+obj/static/*
+lib/shared/*
+lib/static/*
+bin/*
+*.swp
+*.swm
+*.swn
+*.swo
+*.o
+*.a

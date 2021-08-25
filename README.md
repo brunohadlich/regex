@@ -1,2 +1,2 @@
 # regex
-Code related to finite automatas, regexes, regular languages and lexical analysis.
+This project is an implementation of McNaughton-Yamada and Subset Construction algorithms to translate regular expressions into automatas capable of matching strings.

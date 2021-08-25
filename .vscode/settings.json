@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "automata.h": "c",
+        "regex.h": "c",
+        "data_structures.h": "c",
+        "log.h": "c",
+        "stdio.h": "c"
+    }
+}
